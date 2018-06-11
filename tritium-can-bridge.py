@@ -16,6 +16,40 @@ tcp_header_format = '>IIQQ' #fwd id,fwd_range,bus_id,client_id
 tcp_packet_format = '>IB8p' #id,flags,len,data
 can_format = "<IB3x8s" #linux socketcan format
 
+#UDP socket server - mirrors ethernet CAN traffic onto can interface
+class UdpReceiveThread(threading.Thread):
+    def __init__(self):
+        super(UdpReceiveThread, self).__init__()
+        # Ensure this thead dies when the application exits
+        self.setDaemon(True)
+
+    def run(self):
+
+        host = ''
+        port = 4876
+
+        server = socketserver.UDPServer((host, port), UdpReceiveHandler)
+        
+        print('Listening for UDP CAN traffic on port {}'.format(port))
+
+        server.serve_forever()
+
+class UdpReceiveHandler(socketserver.BaseRequestHandler):
+    def handle(self):
+        global sock #this is terrible
+        data = self.request[0]
+        bus_id,client_id,msg_id,flags,data = struct.unpack(udp_packet_format, data)
+
+        print('UDP: {}:0x{:x}'.format(self.client_address[0], msg_id))
+
+        # send on can0
+        ext_flag = (flags >> 7) & 1
+        id_field = msg_id | (ext_flag << 31)
+        pkt = struct.pack(can_format, id_field, len(data), data)
+        sock.send(pkt)
+
+
+
 #TCP socket server - replies to interrogations from the Tritium can server
 class ReceiveThread(threading.Thread):
 
@@ -48,8 +82,6 @@ class ReceiveHandler(socketserver.BaseRequestHandler):
         # Read the length int (number of points in this trajectory)
         len = struct.unpack('!I', self.request.recv(4, socket.MSG_WAITALL))[0]
 
-thread_friend = ReceiveThread()
-thread_friend.start()
 
 
 udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -67,6 +99,12 @@ sock.bind((CAN_INTERFACE,))
 print('Listening for CAN packets on {}...'.format(CAN_INTERFACE))
 
 sock.settimeout(1)
+
+thread_friend = ReceiveThread()
+thread_friend.start()
+
+other_thread_friend = UdpReceiveThread()
+other_thread_friend.start()
 
 while True:
 
